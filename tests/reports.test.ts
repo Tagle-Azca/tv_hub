@@ -10,10 +10,16 @@ import { Session } from '../src/models/session.model.js';
 import { User } from '../src/models/user.model.js';
 import { reportUploadsDirectory } from '../src/middleware/upload.js';
 import { emitReportCreated, emitReportUpdated } from '../src/realtime/socket.js';
+import { sendReportCreatedEmail, sendReportResolvedEmail } from '../src/notifications/report-email.js';
 
 jest.mock('../src/realtime/socket.js', () => ({
   emitReportCreated: jest.fn(),
   emitReportUpdated: jest.fn()
+}));
+
+jest.mock('../src/notifications/report-email.js', () => ({
+  sendReportCreatedEmail: jest.fn().mockResolvedValue(undefined),
+  sendReportResolvedEmail: jest.fn().mockResolvedValue(undefined)
 }));
 
 let mongo: MongoMemoryServer;
@@ -93,7 +99,46 @@ test('an authenticated user can create and list a report', async () => {
   );
 });
 
-test.todo('keeps a persisted report when the report-created email delivery fails');
+test('keeps a persisted report when the report-created email delivery fails', async () => {
+  jest.mocked(sendReportCreatedEmail).mockRejectedValueOnce(new Error('SMTP unavailable'));
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
+  const agent = await registerAgent('mail-failure@example.com');
+
+  const created = await agent.post('/api/reports').field(reportFields()).expect(201);
+
+  expect(sendReportCreatedEmail).toHaveBeenCalledWith(
+    expect.objectContaining({ status: 'OPEN' }),
+    'Report Channel'
+  );
+  expect(await Report.findById(created.body.report._id)).not.toBeNull();
+  expect(emitReportCreated).toHaveBeenCalled();
+});
+
+test('keeps a resolved report when the report-resolved email delivery fails', async () => {
+  const owner = await registerAgent('resolve-mail-owner@example.com');
+  const created = await owner.post('/api/reports').field(reportFields()).expect(201);
+  const admin = await registerAgent('resolve-mail-admin@example.com');
+  await User.updateOne({ email: 'resolve-mail-admin@example.com' }, { role: 'ADMIN' });
+  await admin.post('/api/auth/login').send({ email: 'resolve-mail-admin@example.com', password: 'StrongPass123!' }).expect(200);
+  jest.mocked(sendReportResolvedEmail).mockRejectedValueOnce(new Error('SMTP unavailable'));
+  jest.spyOn(console, 'error').mockImplementation(() => undefined);
+
+  await admin.patch(`/api/admin/reports/${created.body.report._id}/close`).expect(200);
+
+  expect(sendReportResolvedEmail).toHaveBeenCalledWith(
+    expect.objectContaining({ status: 'RESOLVED' }),
+    'Report Channel',
+    'resolve-mail-owner@example.com'
+  );
+  const stored = await Report.findById(created.body.report._id);
+  expect(stored).toEqual(expect.objectContaining({ status: 'RESOLVED', resolvedAt: expect.any(Date) }));
+  expect(stored?.resolvedBy).toBeDefined();
+  expect(emitReportUpdated).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: 'RESOLVED' }));
+
+  jest.clearAllMocks();
+  await admin.patch(`/api/admin/reports/${created.body.report._id}/close`).expect(200);
+  expect(sendReportResolvedEmail).not.toHaveBeenCalled();
+});
 
 test('only an ADMIN can view the support report queue', async () => {
   const reporter = await registerAgent('support-reporter@example.com');
