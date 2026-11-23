@@ -156,11 +156,10 @@ export const createReport: RequestHandler = async (request, response) => {
     // Después de persistir el Report, intenta enviar la notificación con
     // sendReportCreatedEmail(...). Proporciona los datos necesarios y maneja el
     // fallo localmente: el email es secundario y no debe revertir el Report.
-    try {
-      await sendReportCreatedEmail(report, channel.name);
-    } catch (error) {
+    // Not awaited: cloud hosts may block outbound SMTP, and the email must never delay the response.
+    void sendReportCreatedEmail(report, channel.name).catch((error: unknown) => {
       console.error(`Could not send report-created email for ${report.id}:`, error);
-    }
+    });
 
     // TODO V6 SOCKET 3:
     // Después de persistir el Report, emite report:created.
@@ -333,11 +332,10 @@ export const closeSupportReport: RequestHandler = async (request, response) => {
   // sendReportResolvedEmail(...). Un fallo de entrega no debe deshacer el
   // status RESOLVED, resolvedAt ni resolvedBy ya guardados.
   if (!wasAlreadyClosed && reporter.email) {
-    try {
-      await sendReportResolvedEmail(report, channel.name ?? "Unknown channel", reporter.email);
-    } catch (error) {
+    // Not awaited, same reason as the report-created email.
+    void sendReportResolvedEmail(report, channel.name ?? "Unknown channel", reporter.email).catch((error: unknown) => {
       console.error(`Could not send report-resolved email for ${report.id}:`, error);
-    }
+    });
   }
 
   if (!wasAlreadyClosed) emitReportUpdated(userId, report.toObject());

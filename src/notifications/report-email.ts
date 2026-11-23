@@ -45,9 +45,19 @@ async function getTransporter(): Promise<Transporter> {
   return transporterPromise;
 }
 
+const MAIL_TIMEOUT_MS = 15000;
+
 async function sendWithTransporter(message: SendMailOptions): Promise<void> {
-  const transporter = await getTransporter();
-  const info = await transporter.sendMail(message);
+  const send = async () => {
+    const transporter = await getTransporter();
+    return transporter.sendMail(message);
+  };
+  const info = await Promise.race([
+    send(),
+    new Promise<never>((_resolve, reject) =>
+      setTimeout(() => reject(new Error('Email delivery timed out')), MAIL_TIMEOUT_MS).unref()
+    )
+  ]);
 
   if (usesEthereal) {
     const previewUrl = nodemailer.getTestMessageUrl(info);
